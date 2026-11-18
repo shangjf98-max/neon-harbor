@@ -361,12 +361,13 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawWorld(world, cam, time) {
+  function drawWorld(world, cam, time, showArrow = true) {
     drawGround(cam);
     for (const block of world.city.blocks) drawBlock(block, cam);
     drawProps(world, cam, time);
     drawMarker(world, cam, time);
-    drawEdgeArrow(world, cam);
+    // The edge arrow is a gameplay aid only: the title's drifting city gets none.
+    if (showArrow) drawEdgeArrow(world, cam);
     // Entities sorted by y so nearer things overlap farther ones. Kind and
     // reference, not per-frame closures, keep the sort allocation-light.
     const drawables = [];
@@ -405,7 +406,7 @@ export function createRenderer(canvas) {
       x: 1536 - viewW / 2 + Math.sin(time * 0.05) * 320,
       y: 1536 - viewH / 2 + Math.cos(time * 0.04) * 220,
     };
-    drawWorld(world, cam, time);
+    drawWorld(world, cam, time, false);
     ctx.fillStyle = 'rgba(12, 10, 18, 0.55)';
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.textAlign = 'center';
