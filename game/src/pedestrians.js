@@ -160,7 +160,11 @@ function updateThug(ped, dt, world, events) {
   const dx = player.x - ped.x;
   const dy = player.y - ped.y;
   const dist = Math.hypot(dx, dy);
-  const active = ped.aggro || (missions.index === 2 && !missions.done.includes(2));
+  // The crew holds the warehouse until the fight step is live: chasing while
+  // the player is still walking over (step 0) sends them onto the street,
+  // where passing traffic runs them down and wins the fight before the
+  // player arrives. A thug who has been hit fights back regardless.
+  const active = ped.aggro || (missions.index === 2 && missions.step === 1 && !missions.done.includes(2));
   // Thugs fight on foot only: chasing a car is a losing race they never start.
   if (!active || dist > 420 || player.carId !== null) {
     // Lounging by the warehouse: idle sway, facing the street.
