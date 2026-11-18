@@ -82,12 +82,21 @@ function driveTraffic(car, dt, random, cars, city, events, player) {
   const steer = Math.max(-1, Math.min(1, diff * 2.2));
 
   // Look ahead: brake for a car stopped in front, and never rear-end the player.
+  // The check covers the whole stretch in front of the nose, not just one
+  // point: a single lookahead point slides past a stopped car as the gap
+  // closes, the brake lets go, and the car lunges into it again and again.
   let throttle = 0.55;
   const aheadX = car.x + Math.cos(car.angle) * 70;
   const aheadY = car.y + Math.sin(car.angle) * 70;
+  const fwdX = Math.cos(car.angle);
+  const fwdY = Math.sin(car.angle);
   for (const other of cars) {
     if (other === car) continue;
-    if (Math.hypot(other.x - aheadX, other.y - aheadY) < 42) {
+    const ox = other.x - car.x;
+    const oy = other.y - car.y;
+    const along = ox * fwdX + oy * fwdY;
+    const aside = Math.abs(ox * -fwdY + oy * fwdX);
+    if (Math.hypot(other.x - aheadX, other.y - aheadY) < 42 || (along > -10 && along < 120 && aside < 36)) {
       throttle = other.speed < 20 ? -0.6 : 0.15;
       break;
     }

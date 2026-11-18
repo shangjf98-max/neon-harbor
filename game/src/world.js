@@ -84,13 +84,15 @@ export function resetWorld(world) {
   world.camera = { x: 700, y: 2160 };
 
   // Mission 1's sedan is Mara's to lend, and the van is her delivery van.
-  const sedan = createCar('sedan', 580, 2200, Math.PI / 2, '#c94f4f');
+  // Both park at the road's edge, clear of the traffic lane, like the other
+  // parked cars: sitting in the lane they get shoved down the street.
+  const sedan = createCar('sedan', 596, 2200, Math.PI / 2, '#c94f4f');
   sedan.parked = true;
   sedan.owned = true;
   sedan.keep = true;
   sedan.missionCar = 'sedan';
   world.cars.push(sedan);
-  const van = createCar('van', 580, 2420, Math.PI / 2, '#e8e8e8');
+  const van = createCar('van', 596, 2420, Math.PI / 2, '#e8e8e8');
   van.parked = true;
   van.owned = true;
   van.keep = true;

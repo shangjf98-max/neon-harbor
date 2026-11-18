@@ -86,8 +86,10 @@ export function checkCarPedestrianHits(world, events) {
       if (car.driver === 'player' && !ped.thug) {
         events.push({ type: 'crime', kind: 'hitPedestrian', x: ped.x, y: ped.y });
       }
-      if (car.driver === 'player' && ped.thug) {
-        // Only knockdowns during the warehouse fight count toward it.
+      if (ped.thug) {
+        // Any knockdown during the warehouse fight counts toward it: a thug
+        // run down by a passing car is down all the same, and leaving the
+        // count untouched would strand the fight with nobody left to beat.
         if (world.missions.index === 2 && !world.missions.done.includes(2)) {
           world.missions.thugsLeft = Math.max(0, world.missions.thugsLeft - 1);
         }

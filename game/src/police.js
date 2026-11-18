@@ -93,11 +93,42 @@ function pursue(car, dt, world, events) {
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
   let steer = Math.max(-1, Math.min(1, diff * 2.4));
-  // Ease off only when about to overshoot a slow player on foot.
   let throttle = 0.95;
   const playerDist = Math.hypot(player.x - car.x, player.y - car.y);
-  if (playerDist < 60 && player.carId === null) throttle = 0.25;
-  if (playerDist < 26 && player.carId === null) throttle = -0.4;
+  if (player.carId === null) {
+    // Closing on a player on foot: shed speed early, so the car stops beside
+    // them instead of arriving at full tilt and running them down before the
+    // bust can land. A sprinting player still outruns the approach.
+    const cap = Math.max(0, (playerDist - 36) * 1.4);
+    if (car.speed > cap) throttle = -1;
+    else if (playerDist < 120) throttle = Math.min(throttle, 0.35);
+    if (playerDist < 26) throttle = Math.min(throttle, -0.4);
+  } else if (playerDist < 150) {
+    // Containing a driver: hold a ring around the car instead of piling onto
+    // it. Cruisers converging on one point wedge the player against walls and
+    // world edges with no way out; the ring keeps the pressure on while
+    // always leaving room to drive away.
+    const away = Math.atan2(car.y - player.y, car.x - player.x);
+    const rx = player.x + Math.cos(away) * 150;
+    const ry = player.y + Math.sin(away) * 150;
+    const rdx = rx - car.x;
+    const rdy = ry - car.y;
+    const rDist = Math.hypot(rdx, rdy);
+    const rAngle = Math.atan2(rdy, rdx);
+    let rDiff = rAngle - car.angle;
+    while (rDiff > Math.PI) rDiff -= Math.PI * 2;
+    while (rDiff < -Math.PI) rDiff += Math.PI * 2;
+    steer = Math.max(-1, Math.min(1, rDiff * 2.4));
+    if (rDist < 14) {
+      throttle = 0;
+    } else if (Math.abs(rDiff) < 1.2) {
+      throttle = Math.min(0.6, rDist * 0.02);
+    } else {
+      // The ring point is behind: back toward it, steering reversed.
+      throttle = -0.6;
+      steer = -steer;
+    }
+  }
   // Stuck against a wall: back up and swing around.
   if (Math.abs(car.speed) < 25 && throttle > 0.5) {
     car.stuckTime = (car.stuckTime || 0) + dt;
@@ -106,8 +137,11 @@ function pursue(car, dt, world, events) {
   }
   if (car.stuckTime > 1.2) {
     throttle = -0.8;
-    steer = car.stuckSteer || (car.stuckSteer = world.random() < 0.5 ? -1 : 1);
-    if (car.stuckTime > 2.2) {
+    // Swing the wheel both ways while backing out: a fixed lock just spins
+    // the car in place when it is boxed in on three sides.
+    const side = car.stuckSteer || (car.stuckSteer = world.random() < 0.5 ? -1 : 1);
+    steer = (Math.floor(world.time * 2.4) % 2 === 0 ? 1 : -1) * side;
+    if (car.stuckTime > 2.6) {
       car.stuckTime = 0;
       car.stuckSteer = 0;
     }

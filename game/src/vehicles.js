@@ -158,9 +158,16 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
           car.y += uy * push;
           other.x -= ux * push;
           other.y -= uy * push;
-          const avg = (car.speed + other.speed) / 2;
-          car.speed = avg;
-          other.speed = avg;
+          // Trade speed only on a real impact. Averaging every step while two
+          // cars lean on each other glues them together: each one's drive is
+          // cancelled by the other's, so neither can pull away — a driver
+          // boxed in by cruisers stays boxed in forever. Gentle contact just
+          // shoves the cars apart and lets each keep its own speed.
+          if (closing > 60) {
+            const avg = (car.speed + other.speed) / 2;
+            car.speed = avg;
+            other.speed = avg;
+          }
           // A parked car that gets shoved stays put instead of rolling away forever.
           if (other.parked) other.speed = 0;
           if (car.parked) car.speed = 0;

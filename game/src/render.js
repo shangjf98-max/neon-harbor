@@ -200,9 +200,12 @@ export function createRenderer(canvas) {
       ctx.textAlign = 'center';
       const label = block.label;
       const tw = ctx.measureText(label).width;
-      ctx.fillRect(x + r.w / 2 - tw / 2 - 8, y + 8, tw + 16, 24);
+      // Keep the label below the top HUD band: at the top of the screen the
+      // objective panel would cover it.
+      const ly = Math.max(y + 8, 66);
+      ctx.fillRect(x + r.w / 2 - tw / 2 - 8, ly, tw + 16, 24);
       ctx.fillStyle = '#f5f1e6';
-      ctx.fillText(label, x + r.w / 2, y + 25);
+      ctx.fillText(label, x + r.w / 2, ly + 17);
       ctx.textAlign = 'left';
     }
   }

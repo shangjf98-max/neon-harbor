@@ -134,12 +134,15 @@ export function drawHUD(ctx, world, view, prompt, messages, showMissions, briefi
     ctx.textAlign = 'left';
   }
 
-  // Message feed, above the minimap.
+  // Message feed, above the minimap, on a dim strip so it reads over pale ground.
   ctx.font = `13px ${FONT}`;
   let my = height - 216;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
     const alpha = Math.min(1, m.time / 1.5);
+    const tw = ctx.measureText(m.text).width;
+    ctx.fillStyle = `rgba(20, 18, 24, ${0.55 * alpha})`;
+    ctx.fillRect(16, my - 14, tw + 12, 19);
     ctx.fillStyle = `rgba(245, 241, 230, ${alpha})`;
     ctx.fillText(m.text, 22, my);
     my -= 20;
@@ -200,7 +203,7 @@ export function drawHUD(ctx, world, view, prompt, messages, showMissions, briefi
     wrapText(ctx, briefing.brief, bx + 18, by + 50, bw - 36, 20);
     ctx.fillStyle = PALETTE.muted;
     ctx.font = `12px ${FONT}`;
-    ctx.fillText('Enter or click to continue', bx + 18, by + 92);
+    ctx.fillText('Enter, Space, or click to continue', bx + 18, by + 92);
   }
 
   // Mission list panel (Tab).
