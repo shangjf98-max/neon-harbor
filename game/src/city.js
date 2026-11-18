@@ -66,6 +66,15 @@ function circleHitsRect(x, y, r, rect) {
 }
 
 export function createCity(random) {
+  // Nothing solid may reach the road bands, with room for a car's nose: the
+  // last block row and column run to the world edge, past the last road's
+  // band, so unclamped solids there wall off the ring roads (the harbour
+  // basins blocked the south road outright, and east-edge buildings left
+  // the east road impassable). The clearance is 40px past the band edge,
+  // not just the band itself: a car hugging the band's edge swings its
+  // front circle 34px past its centre, and a basin 6px off the band still
+  // grinds it to a halt mid-turn (the M4 evade flake of round 5).
+  const SOLID_LIMIT = WORLD.size - WORLD.road - 40;
   const blocks = [];
   const solids = []; // AABBs nothing may pass through: buildings, crates, walls, water.
   const trees = []; // {x, y, r, shade}: drawn in parks, solid as circles.
@@ -106,8 +115,8 @@ export function createCity(random) {
           const bx = rect.x + inset + gx * (rect.w - inset * 2 - w);
           const by = rect.y + inset + gy * (rect.h - inset * 2 - h);
           const b = {
-            x: Math.min(bx, rect.x + rect.w - inset - w),
-            y: Math.min(by, rect.y + rect.h - inset - h),
+            x: Math.min(bx, rect.x + rect.w - inset - w, SOLID_LIMIT - w),
+            y: Math.min(by, rect.y + rect.h - inset - h, SOLID_LIMIT - h),
             w,
             h,
             height: rangeInt(random, 1, 3),
@@ -122,8 +131,8 @@ export function createCity(random) {
         const count = rangeInt(random, 7, 11);
         for (let i = 0; i < count; i += 1) {
           trees.push({
-            x: range(random, rect.x + 40, rect.x + rect.w - 40),
-            y: range(random, rect.y + 40, rect.y + rect.h - 40),
+            x: Math.min(range(random, rect.x + 40, rect.x + rect.w - 40), SOLID_LIMIT - 30),
+            y: Math.min(range(random, rect.y + 40, rect.y + rect.h - 40), SOLID_LIMIT - 30),
             r: range(random, 16, 26),
             shade: random() < 0.5,
           });
@@ -134,8 +143,8 @@ export function createCity(random) {
         const count = rangeInt(random, 4, 6);
         for (let i = 0; i < count; i += 1) {
           trees.push({
-            x: range(random, rect.x + 50, rect.x + rect.w - 50),
-            y: range(random, rect.y + 50, rect.y + rect.h - 50),
+            x: Math.min(range(random, rect.x + 50, rect.x + rect.w - 50), SOLID_LIMIT - 30),
+            y: Math.min(range(random, rect.y + 50, rect.y + rect.h - 50), SOLID_LIMIT - 30),
             r: range(random, 14, 20),
             shade: false,
           });
@@ -145,14 +154,21 @@ export function createCity(random) {
         solids.push(f);
         block.fountain = f;
       } else if (kind === 'harbor') {
-        // A water basin along the block's south edge, docks and crates around it.
-        block.water = { x: rect.x + 10, y: rect.y + rect.h - 150, w: rect.w - 20, h: 140 };
+        // A water basin along the block's south edge, docks and crates around
+        // it. The basin stops short of the ring roads: its old footprint ran
+        // to the world edge and walled off the south road between intersections.
+        block.water = {
+          x: rect.x + 10,
+          y: Math.min(rect.y + rect.h - 150, SOLID_LIMIT - 140),
+          w: Math.min(rect.w - 20, SOLID_LIMIT - (rect.x + 10)),
+          h: 140,
+        };
         solids.push({ ...block.water });
         const n = rangeInt(random, 3, 5);
         for (let i = 0; i < n; i += 1) {
           const c = {
-            x: range(random, rect.x + 30, rect.x + rect.w - 70),
-            y: range(random, rect.y + 30, rect.y + rect.h - 200),
+            x: range(random, rect.x + 30, Math.min(rect.x + rect.w - 70, SOLID_LIMIT - 70)),
+            y: range(random, rect.y + 30, block.water.y - 70),
             w: range(random, 26, 40),
             h: range(random, 26, 40),
             hue: pick(random, ['#b5854d', '#8a9a5b', '#7d8aa0']),
@@ -266,7 +282,7 @@ export function createCity(random) {
     // Harbor blocks hold water along the south edge: the loop's south side
     // stays north of the basin, or walkers tread water forever.
     const block = blocks.find((b) => b.col === col && b.row === row);
-    const bottom = block && block.kind === 'harbor' ? rect.y + rect.h - 170 : rect.y + rect.h - m;
+    const bottom = block && block.water ? block.water.y - 20 : rect.y + rect.h - m;
     return [
       { x: rect.x + m, y: rect.y + m },
       { x: rect.x + rect.w - m, y: rect.y + m },

@@ -24,12 +24,14 @@ export function policeTarget(wanted) {
 
 function spawnPolice(world) {
   const { random, player } = world;
-  // Appear at an intersection some distance off, never on top of the player.
+  // Appear at an intersection some distance off, never on top of the player
+  // and never inside the hide radius: a cruiser spawning 500px away vetoes
+  // a clean breakaway the player just earned, and pops into view on screen.
   const spots = [];
   for (const x of WORLD.roadCentres) {
     for (const y of WORLD.roadCentres) {
       const d = Math.hypot(x - player.x, y - player.y);
-      if (d > 480 && d < 1300) spots.push({ x, y });
+      if (d > 750 && d < 1300) spots.push({ x, y });
     }
   }
   const at = spots.length > 0 ? pick(random, spots) : { x: WORLD.roadCentres[3], y: WORLD.roadCentres[3] };
@@ -94,6 +96,7 @@ function pursue(car, dt, world, events) {
   while (diff < -Math.PI) diff += Math.PI * 2;
   let steer = Math.max(-1, Math.min(1, diff * 2.4));
   let throttle = 0.95;
+  let ringSeeking = false; // in ring mode and still travelling to its post
   const playerDist = Math.hypot(player.x - car.x, player.y - car.y);
   if (player.carId === null) {
     // Closing on a player on foot: shed speed early, so the car stops beside
@@ -108,29 +111,123 @@ function pursue(car, dt, world, events) {
     // it. Cruisers converging on one point wedge the player against walls and
     // world edges with no way out; the ring keeps the pressure on while
     // always leaving room to drive away.
-    const away = Math.atan2(car.y - player.y, car.x - player.x);
-    const rx = player.x + Math.cos(away) * 150;
-    const ry = player.y + Math.sin(away) * 150;
-    const rdx = rx - car.x;
-    const rdy = ry - car.y;
-    const rDist = Math.hypot(rdx, rdy);
-    const rAngle = Math.atan2(rdy, rdx);
-    let rDiff = rAngle - car.angle;
-    while (rDiff > Math.PI) rDiff -= Math.PI * 2;
-    while (rDiff < -Math.PI) rDiff += Math.PI * 2;
-    steer = Math.max(-1, Math.min(1, rDiff * 2.4));
-    if (rDist < 14) {
-      throttle = 0;
-    } else if (Math.abs(rDiff) < 1.2) {
-      throttle = Math.min(0.6, rDist * 0.02);
-    } else {
-      // The ring point is behind: back toward it, steering reversed.
-      throttle = -0.6;
-      steer = -steer;
+    //
+    // Each cruiser owns a fixed post on the ring, spread by the golden angle
+    // over cruiser ids: a post derived from the cruiser's current bearing
+    // slides around the ring as it moves, and the cruiser orbits the player
+    // instead of ever settling. The post must also be inside the world, out
+    // of solids, and reachable by a straight drive — at a harbour edge the
+    // raw post sits across the water, and greedy steering grinds the cruiser
+    // against the basin forever.
+    if (car.ringAngle === undefined) car.ringAngle = (car.id * 2.399963229) % (Math.PI * 2);
+    const postAt = (a) => ({
+      x: player.x + Math.cos(a) * 150,
+      y: player.y + Math.sin(a) * 150,
+    });
+    const inWorld = (p) => p.x >= 40 && p.x <= WORLD.size - 40 && p.y >= 40 && p.y <= WORLD.size - 40;
+    const pathClear = (p) => {
+      const d = Math.hypot(p.x - car.x, p.y - car.y);
+      const n = Math.max(1, Math.ceil(d / 30));
+      for (let k = 1; k <= n; k += 1) {
+        const t = k / n;
+        if (!world.city.freeAt(car.x + (p.x - car.x) * t, car.y + (p.y - car.y) * t, 24)) return false;
+      }
+      return true;
+    };
+    // A post counts only at its full ring radius: clamping an out-of-world
+    // post onto the map edge collapses it onto the player in a corner, and
+    // the cruiser then sits on the player's bumper instead of holding the ring.
+    // The drive to the post must also stay clear of the player's car: a post
+    // on the far side sends the cruiser straight through the player, and the
+    // repeated contact bulldozes a stopped car down the street.
+    const postOk = (p) => {
+      if (!inWorld(p) || !world.city.freeAt(p.x, p.y, 30) || !pathClear(p)) return false;
+      if (playerDist >= 55) {
+        const segX = p.x - car.x;
+        const segY = p.y - car.y;
+        const segLen2 = segX * segX + segY * segY;
+        const t = segLen2 === 0 ? 0 : Math.max(0, Math.min(1, ((player.x - car.x) * segX + (player.y - car.y) * segY) / segLen2));
+        const nearX = car.x + segX * t;
+        const nearY = car.y + segY * t;
+        if (Math.hypot(player.x - nearX, player.y - nearY) < 55) return false;
+      }
+      return true;
+    };
+    // Search the ring around the cruiser's own post, widening the ring when
+    // the corner geometry leaves no room at 150px: at a harbour corner the
+    // reachable arc is a thin crescent, and a wider ring finds open road.
+    // If nothing is reachable anywhere, fall back to the clamped post and
+    // let the stuck recovery do what it can.
+    let post = null;
+    const offsets = [0, Math.PI / 6, -Math.PI / 6, Math.PI / 3, -Math.PI / 3, Math.PI / 2, -Math.PI / 2, Math.PI];
+    for (const radius of [150, 200, 260]) {
+      for (const off of offsets) {
+        const alt = {
+          x: player.x + Math.cos(car.ringAngle + off) * radius,
+          y: player.y + Math.sin(car.ringAngle + off) * radius,
+        };
+        if (postOk(alt)) {
+          post = alt;
+          break;
+        }
+      }
+      if (post) break;
+    }
+    if (!post) {
+      const raw = postAt(car.ringAngle);
+      post = {
+        x: Math.max(40, Math.min(WORLD.size - 40, raw.x)),
+        y: Math.max(40, Math.min(WORLD.size - 40, raw.y)),
+      };
+    }
+    {
+      const rdx = post.x - car.x;
+      const rdy = post.y - car.y;
+      const rDist = Math.hypot(rdx, rdy);
+      const rAngle = Math.atan2(rdy, rdx);
+      let rDiff = rAngle - car.angle;
+      while (rDiff > Math.PI) rDiff -= Math.PI * 2;
+      while (rDiff < -Math.PI) rDiff += Math.PI * 2;
+      steer = Math.max(-1, Math.min(1, rDiff * 2.4));
+      if (rDist < 14) {
+        throttle = 0;
+      } else if (Math.abs(rDiff) < 1.2) {
+        throttle = Math.min(0.6, rDist * 0.02);
+        ringSeeking = true;
+      } else {
+        // The ring point is behind: back toward it, steering reversed.
+        throttle = -0.6;
+        steer = -steer;
+        ringSeeking = true;
+      }
+    }
+    if (playerDist < 70) {
+      // Too close: get clear of the player's car instead of shoving it. A
+      // cruiser grinding into the player's door wedges it against whatever
+      // solid is behind it, and the shove always wins the pushing match.
+      // Move away from the player in whichever direction the nose allows:
+      // reversing while facing away would drive straight into them.
+      const awayAngle = Math.atan2(car.y - player.y, car.x - player.x);
+      let aDiff = awayAngle - car.angle;
+      while (aDiff > Math.PI) aDiff -= Math.PI * 2;
+      while (aDiff < -Math.PI) aDiff += Math.PI * 2;
+      if (Math.abs(aDiff) < Math.PI / 2) {
+        throttle = 0.6;
+        steer = Math.max(-1, Math.min(1, aDiff * 2.4));
+      } else {
+        throttle = -0.6;
+        steer = -Math.max(-1, Math.min(1, aDiff * 2.4));
+      }
+      ringSeeking = true;
     }
   }
-  // Stuck against a wall: back up and swing around.
-  if (Math.abs(car.speed) < 25 && throttle > 0.5) {
+  // Stuck against a wall: back up and swing around. A cruiser counts as stuck
+  // when it is slow while driving forward, or while travelling to its ring
+  // post in either direction — ring mode's capped throttle never reaches the
+  // forward-only test, so without this a boxed cruiser never tries to escape.
+  // Braking toward a player on foot is not stuck: the bust needs the cruiser
+  // to hold still beside them.
+  if (Math.abs(car.speed) < 25 && (throttle > 0.5 || ringSeeking)) {
     car.stuckTime = (car.stuckTime || 0) + dt;
   } else {
     car.stuckTime = 0;

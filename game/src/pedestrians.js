@@ -53,11 +53,14 @@ export function spawnPedestrian(random, city) {
 }
 
 /** A pedestrian notices danger: a punch, a speeding car, or a body nearby. */
-export function scarePedestrian(ped, fromX, fromY, random = Math.random) {
+export function scarePedestrian(ped, fromX, fromY, random = Math.random, fleeAngle = null) {
   if (ped.state === 'down' || ped.thug) return;
   ped.state = 'flee';
   ped.fleeTime = 2.5 + random() * 2;
-  ped.angle = Math.atan2(ped.y - fromY, ped.x - fromX);
+  // The flee direction is fixed at the scare: a pedestrian diving off the
+  // road keeps diving off it instead of re-aiming every step.
+  ped.fleeAngle = fleeAngle ?? Math.atan2(ped.y - fromY, ped.x - fromX);
+  ped.angle = ped.fleeAngle;
   ped.scared = true;
 }
 
@@ -93,8 +96,9 @@ export function updatePedestrian(ped, dt, world, events) {
   if (ped.state === 'flee') {
     ped.fleeTime -= dt;
     ped.speed = 190;
-    // Keep running away from the player, steering around solids by feel.
-    const away = Math.atan2(-dy, -dx);
+    // Keep running in the direction fixed at the scare, steering around
+    // solids by feel.
+    const away = ped.fleeAngle ?? Math.atan2(-dy, -dx);
     let diff = away - ped.angle;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
@@ -110,8 +114,17 @@ export function updatePedestrian(ped, dt, world, events) {
   }
   // A fast car bearing down scares walkers off the street.
   for (const car of world.cars) {
-    if (Math.abs(car.speed) > 240 && Math.hypot(car.x - ped.x, car.y - ped.y) < 120) {
-      scarePedestrian(ped, car.x, car.y, world.random);
+    if (Math.abs(car.speed) > 240 && Math.hypot(car.x - ped.x, car.y - ped.y) < 150) {
+      // Dive off the road, perpendicular to the car's path: running straight
+      // away down the street is a race the pedestrian always loses to a car
+      // doing 560px/s, and the strike is a lottery, not a choice. The side
+      // is the one the pedestrian already stands on, so nobody dives across
+      // the car's nose.
+      let fleeAngle = car.angle + Math.PI / 2;
+      if (Math.cos(fleeAngle) * (ped.x - car.x) + Math.sin(fleeAngle) * (ped.y - car.y) < 0) {
+        fleeAngle += Math.PI;
+      }
+      scarePedestrian(ped, car.x, car.y, world.random, fleeAngle);
       return;
     }
   }

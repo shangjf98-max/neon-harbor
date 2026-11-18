@@ -87,7 +87,16 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
   car.speed = Math.max(-spec.reverse, Math.min(spec.maxSpeed, car.speed));
   car.brakeLight = throttle < 0 && car.speed > 5;
 
-  const speedFactor = Math.min(1, Math.abs(car.speed) / 180);
+  const speedFactor = Math.max(
+    Math.min(1, Math.abs(car.speed) / 180),
+    // A car grinding nose-first into a wall never builds speed — every
+    // step's impact kills it — and with no speed there is no steering, so
+    // it can neither drive on nor turn away: a permanent trap, for players
+    // and police alike. While the driver holds the throttle, a crawling
+    // car keeps enough steering authority to rotate clear of the wall.
+    // With no throttle a standing car still does not steer (see V3).
+    throttle !== 0 && Math.abs(car.speed) < 40 ? 0.35 : 0,
+  );
   car.steer += (steer - car.steer) * Math.min(1, dt * 8);
   car.angle += car.steer * spec.turn * speedFactor * dt * (car.speed < 0 ? -1 : 1);
 
@@ -99,6 +108,8 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
 
   // City collision: each circle is pushed out of solids; a hard hit costs speed and paint.
   let hit = false;
+  let pushX = 0;
+  let pushY = 0;
   for (const c of carCircles(car)) {
     const res = city.collideCircle(c.x, c.y, c.r);
     if (res.moved) {
@@ -106,16 +117,32 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
       const dy = res.y - c.y;
       car.x += dx;
       car.y += dy;
+      pushX += dx;
+      pushY += dy;
       hit = true;
     }
   }
   if (hit) {
-    const impact = Math.abs(car.speed);
+    // Only the component of motion driven INTO the solid is lost: a glancing
+    // scrape along a wall keeps most of its speed and slides along the edge,
+    // while a head-on hit stops the car as before. Killing all speed on any
+    // contact grinds a car brushing an edge to a halt step after step, and a
+    // driver steering along the edge — a water basin, a building face — can
+    // never break free, only crawl. The push-out direction is the face
+    // normal, so its alignment with the car's motion measures head-on-ness.
+    const pushLen = Math.hypot(pushX, pushY);
+    let alignment = 1;
+    if (pushLen > 0) {
+      const hx = Math.cos(car.angle) * Math.sign(car.speed || 1);
+      const hy = Math.sin(car.angle) * Math.sign(car.speed || 1);
+      alignment = Math.min(1, Math.abs((hx * pushX + hy * pushY) / pushLen));
+    }
+    const impact = Math.abs(car.speed) * alignment;
     if (impact > 90) {
       damageCar(car, impact * 0.03);
       events.push({ type: 'crash', x: car.x, y: car.y, hard: impact > 220 });
     }
-    car.speed *= 0.35;
+    car.speed *= 1 - 0.65 * alignment * alignment;
     car.skid = 1;
   }
 
