@@ -1,124 +1,359 @@
-// The game's rules and state, with no drawing and no browser in it: the player's paddle, the
-// pool of falling blocks and coins, spawning, collisions, score, lives and level. step() advances
-// one fixed step and returns what happened as bit flags, so the caller can react without the
-// world knowing about screens or sound. Nothing here allocates after createWorld returns.
-import { BLOCK, COIN, FIELD, LEVEL, LIVES, PLAYER, POOL_SIZE } from './config.js';
+// The world: one state object, built from a seed, advanced one fixed step at a
+// time. It owns the city, the player, the cars, the pedestrians, the wanted
+// level, the missions and the effects, and it turns the subsystems' events
+// into state changes. The renderer and the screens read it; they never write it.
 
-export const KIND_BLOCK = 0;
-export const KIND_COIN = 1;
+import { CASH_PICKUP_COUNT, PARKED_COUNT, PEDESTRIAN_COUNT, PLAYER, TRAFFIC_COUNT, WANTED, WORLD } from './config.js';
+import { createRandom, pick, range, rangeInt } from './random.js';
+import { blockRect, createCity } from './city.js';
+import { createPlayer, damagePlayer, enterCar, exitCar, nearestCar, updatePlayer } from './player.js';
+import { MODELS, createCar, stepCar } from './vehicles.js';
+import { spawnTrafficCar, updateTraffic } from './traffic.js';
+import { createPedestrian, spawnPedestrian, updatePedestrian } from './pedestrians.js';
+import { checkCarPedestrianHits, resolvePunch, updatePickups } from './combat.js';
+import { addWanted, applyBusted, applyWasted, updatePolice } from './police.js';
+import { LANDMARKS, activeStep, createMissions, updateMissions } from './missions.js';
+import { ACTION_INTERACT, ACTION_PUNCH } from './input.js';
 
-export const EVENT_HIT = 1;
-export const EVENT_COIN = 2;
-export const EVENT_OVER = 4;
-
-function overlaps(a, b) {
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+export function createWorld(seed) {
+  const world = {
+    seed,
+    random: createRandom(seed),
+    city: null,
+    player: null,
+    cars: [],
+    peds: [],
+    pickups: [],
+    particles: [],
+    skids: [],
+    wanted: 0,
+    wantedTimer: 0,
+    hideTimer: 0,
+    bustTimer: 0,
+    spawnTimer: 0,
+    nearestPolice: Infinity,
+    sirenOn: false,
+    missions: createMissions(),
+    stats: { stolen: 0, knockedOut: 0, distance: 0 },
+    camera: { x: 0, y: 0 },
+    time: 0,
+    playTime: 0,
+    shake: 0,
+    lastFine: 0,
+    pendingEnd: null,
+    healTimer: 0,
+    saveTimer: 0,
+    mara: { x: LANDMARKS.GARAGE.x, y: LANDMARKS.GARAGE.y - 20 },
+  };
+  resetWorld(world);
+  return world;
 }
 
-export function createWorld(random) {
-  const player = { x: 0, y: FIELD.groundY - PLAYER.height, width: PLAYER.width, height: PLAYER.height, invulnerable: 0 };
-  const items = [];
-  for (let index = 0; index < POOL_SIZE; index += 1) {
-    items.push({ active: false, kind: KIND_BLOCK, x: 0, y: 0, width: 0, height: 0, speed: 0 });
+/** (Re)build everything from the world's seed: a fresh game, or a loaded one before its save is applied. */
+export function resetWorld(world) {
+  const random = createRandom(world.seed);
+  world.random = random;
+  world.city = createCity(random);
+  world.cars = [];
+  world.peds = [];
+  world.pickups = [];
+  world.particles = [];
+  world.skids = [];
+  world.wanted = 0;
+  world.wantedTimer = 0;
+  world.hideTimer = 0;
+  world.bustTimer = 0;
+  world.spawnTimer = 0;
+  world.nearestPolice = Infinity;
+  world.sirenOn = false;
+  world.missions = createMissions();
+  world.stats = { stolen: 0, knockedOut: 0, distance: 0 };
+  world.time = 0;
+  world.playTime = 0;
+  world.shake = 0;
+  world.lastFine = 0;
+  world.pendingEnd = null;
+  world.healTimer = 0;
+  world.saveTimer = 0;
+
+  // Rook starts on the sidewalk by Mara's garage, facing the street.
+  world.player = createPlayer(700, 2160);
+  world.player.angle = Math.PI;
+  world.camera = { x: 700, y: 2160 };
+
+  // Mission 1's sedan is Mara's to lend, and the van is her delivery van.
+  const sedan = createCar('sedan', 580, 2200, Math.PI / 2, '#c94f4f');
+  sedan.parked = true;
+  sedan.owned = true;
+  sedan.keep = true;
+  sedan.missionCar = 'sedan';
+  world.cars.push(sedan);
+  const van = createCar('van', 580, 2420, Math.PI / 2, '#e8e8e8');
+  van.parked = true;
+  van.owned = true;
+  van.keep = true;
+  van.missionCar = 'van';
+  world.cars.push(van);
+  const sports = createCar('sports', 1560, 1840, 0, '#ffd166');
+  sports.parked = true;
+  sports.keep = true;
+  sports.missionCar = 'sports';
+  world.cars.push(sports);
+
+  // Parked cars along the roads, for the taking.
+  const models = ['sedan', 'sedan', 'taxi', 'van', 'sedan', 'truck'];
+  for (let i = 0; i < PARKED_COUNT; i += 1) {
+    const vertical = random() < 0.5;
+    const centre = pick(random, WORLD.roadCentres);
+    const along = range(random, 200, WORLD.size - 200);
+    const edge = (random() < 0.5 ? -1 : 1) * (WORLD.road / 2 - 18);
+    const x = vertical ? centre + edge : along;
+    const y = vertical ? along : centre + edge;
+    const model = pick(random, models);
+    const car = createCar(model, x, y, vertical ? Math.PI / 2 : 0, pick(random, MODELS[model].colors));
+    car.parked = true;
+    world.cars.push(car);
   }
-  const state = { player, items, score: 0, lives: LIVES, level: 1, elapsed: 0, blockTimer: 0, coinTimer: 0 };
 
-  function reset() {
-    player.x = (FIELD.width - player.width) / 2;
-    player.invulnerable = 0;
-    for (const item of items) item.active = false;
-    state.score = 0;
-    state.lives = LIVES;
-    state.level = 1;
-    state.elapsed = 0;
-    state.blockTimer = BLOCK.interval;
-    state.coinTimer = COIN.interval;
+  // Traffic and pedestrians.
+  for (let i = 0; i < TRAFFIC_COUNT; i += 1) world.cars.push(spawnTrafficCar(random, 700, 2160));
+  for (let i = 0; i < PEDESTRIAN_COUNT; i += 1) world.peds.push(spawnPedestrian(random, world.city));
+
+  // The warehouse crew: three thugs lounging in the yard.
+  const crew = [
+    { x: 2300, y: 900 },
+    { x: 2400, y: 920 },
+    { x: 2350, y: 850 },
+  ];
+  for (const spot of crew) {
+    const thug = createPedestrian(spot.x, spot.y, Math.PI / 2, { hp: 68, thug: true, shirt: '#3a3f4a', skin: '#c68642' });
+    thug.downTime = 0;
+    world.peds.push(thug);
   }
 
-  function freeItem() {
-    for (let index = 0; index < items.length; index += 1) if (!items[index].active) return items[index];
-    return null;
+  // Cash lying around the sidewalks.
+  for (let i = 0; i < CASH_PICKUP_COUNT; i += 1) {
+    const col = rangeInt(random, 0, WORLD.blocks - 1);
+    const row = rangeInt(random, 0, WORLD.blocks - 1);
+    const loop = world.city.sidewalkLoop(col, row);
+    const at = pick(random, loop);
+    world.pickups.push({ x: at.x + range(random, -20, 20), y: at.y + range(random, -20, 20), amount: 20, life: 9999, bob: random() * 6 });
   }
+}
 
-  function spawnBlock() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_BLOCK;
-    item.width = BLOCK.minWidth + random() * (BLOCK.maxWidth - BLOCK.minWidth);
-    item.height = BLOCK.height;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = BLOCK.speed + BLOCK.speedPerLevel * (state.level - 1) + random() * BLOCK.speedJitter;
-  }
-
-  function spawnCoin() {
-    const item = freeItem();
-    if (item === null) return;
-    item.active = true;
-    item.kind = KIND_COIN;
-    item.width = COIN.size;
-    item.height = COIN.size;
-    item.x = random() * (FIELD.width - item.width);
-    item.y = -item.height;
-    item.speed = COIN.speed + COIN.speedPerLevel * (state.level - 1);
-  }
-
-  function blockInterval() {
-    return Math.max(BLOCK.minInterval, BLOCK.interval * BLOCK.intervalScale ** (state.level - 1));
-  }
-
-  /**
-   * One fixed step. `direction` is -1, 0 or 1 (left, still, right). With `harmless` set (the title
-   * screen's backdrop) things fall but nothing touches the player and nothing scores.
-   */
-  function step(dt, direction, harmless) {
-    let events = 0;
-    state.elapsed += dt;
-    state.level = Math.min(LEVEL.max, 1 + Math.floor(state.elapsed / LEVEL.seconds));
-
-    player.x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * dt));
-    if (player.invulnerable > 0) player.invulnerable = Math.max(0, player.invulnerable - dt);
-
-    state.blockTimer -= dt;
-    if (state.blockTimer <= 0) {
-      spawnBlock();
-      state.blockTimer += blockInterval();
+/** Apply a loaded save onto a freshly reset world. */
+export function applySave(world, data) {
+  const p = world.player;
+  p.x = data.player.x;
+  p.y = data.player.y;
+  p.angle = data.player.angle;
+  p.hp = data.player.hp;
+  p.money = data.player.money;
+  world.missions.index = data.missions.index;
+  world.missions.step = data.missions.step;
+  world.missions.done = [...data.missions.done];
+  world.missions.thugsLeft = data.missions.thugsLeft;
+  world.missions.earned = data.missions.earned;
+  world.playTime = data.playTime || 0;
+  // Restore the kept cars; the rest of the traffic is re-rolled by the seed.
+  for (const saved of data.cars) {
+    const car = world.cars.find((c) => c.missionCar === saved.model && c.keep) || world.cars.find((c) => c.id === saved.id);
+    if (car) {
+      car.x = saved.x;
+      car.y = saved.y;
+      car.angle = saved.angle;
+      car.hp = saved.hp;
+      car.stolen = saved.stolen;
+      car.parked = true;
+      car.speed = 0;
+      car.driver = 'none';
     }
-    state.coinTimer -= dt;
-    if (state.coinTimer <= 0) {
-      spawnCoin();
-      state.coinTimer += COIN.interval + random() * COIN.intervalJitter;
+  }
+  if (data.playerCarId) {
+    const car = world.cars.find((c) => c.id === data.playerCarId);
+    if (car) {
+      car.driver = 'player';
+      car.parked = false;
+      p.carId = car.id;
     }
+  }
+  world.camera = { x: p.x, y: p.y };
+}
 
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      item.y += item.speed * dt;
-      if (item.y > FIELD.groundY) {
-        item.active = false;
-        if (item.kind === KIND_BLOCK && !harmless) state.score += BLOCK.dodgePoints;
-        continue;
+/** Spawn a burst of particles at a point. */
+export function burst(world, x, y, color, count, size, life) {
+  for (let i = 0; i < count; i += 1) {
+    const angle = world.random() * Math.PI * 2;
+    const speed = 30 + world.random() * 90;
+    world.particles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size: size * (0.6 + world.random() * 0.8),
+      life: life * (0.6 + world.random() * 0.7),
+      maxLife: life,
+      color,
+      alpha: 0.9,
+    });
+  }
+}
+
+/** One fixed step of the whole simulation. Returns the events for sound and messages. */
+export function stepWorld(world, dt, input, actions, audio) {
+  const events = [];
+  const player = world.player;
+  const prevX = player.x;
+  const prevY = player.y;
+  world.time += dt;
+  world.playTime += dt;
+  world.saveTimer += dt;
+  if (world.shake > 0) world.shake = Math.max(0, world.shake - dt * 2.2);
+
+  // One-shot actions.
+  if (actions & ACTION_PUNCH) resolvePunch(world, events);
+  if (actions & ACTION_INTERACT) {
+    if (player.carId !== null) {
+      exitCar(world, events);
+    } else {
+      const car = nearestCar(world, 56);
+      if (car) {
+        const wasStolen = car.stolen;
+        enterCar(world, car, events);
+        if (!wasStolen && car.stolen) world.stats.stolen += 1;
       }
-      if (harmless || !overlaps(item, player)) continue;
-      if (item.kind === KIND_COIN) {
-        item.active = false;
-        state.score += COIN.points;
-        events |= EVENT_COIN;
-      } else if (player.invulnerable === 0) {
-        item.active = false;
-        state.lives -= 1;
-        player.invulnerable = PLAYER.invulnerable;
-        events |= EVENT_HIT;
-        if (state.lives === 0) {
-          events |= EVENT_OVER;
-          break;
-        }
-      }
     }
-    return events;
   }
 
-  reset();
-  return { state, reset, step };
+  updatePlayer(world, dt, input, events);
+
+  // Driving: the player's car takes the drive input.
+  const car = world.cars.find((c) => c.id === player.carId);
+  if (car) {
+    const drive = input.driveVector();
+    const prevCarX = car.x;
+    const prevCarY = car.y;
+    car.skid = 0;
+    const res = stepCar(car, dt, drive.throttle, drive.steer, world.city, world.cars, events);
+    if (drive.handbrake) car.speed *= 1 - Math.min(1, dt * 3);
+    if (car.skid && Math.abs(car.speed) > 200) {
+      world.skids.push({ x1: prevCarX, y1: prevCarY, x2: car.x, y2: car.y, life: 6, maxLife: 6 });
+      if (world.skids.length > 220) world.skids.splice(0, world.skids.length - 220);
+    }
+    player.x = car.x;
+    player.y = car.y;
+    player.angle = car.angle;
+    world.stats.distance += res.moved;
+    // Dust kicked up at speed.
+    if (Math.abs(car.speed) > 350 && world.random() < 0.3) {
+      world.particles.push({
+        x: car.x - Math.cos(car.angle) * 24,
+        y: car.y - Math.sin(car.angle) * 24,
+        vx: (world.random() - 0.5) * 40,
+        vy: (world.random() - 0.5) * 40,
+        size: 5,
+        life: 0.5,
+        maxLife: 0.5,
+        color: 'rgba(210, 190, 150, A)',
+        alpha: 0.5,
+      });
+    }
+  }
+
+  updateTraffic(world, dt, events);
+  for (const ped of world.peds) updatePedestrian(ped, dt, world, events);
+  checkCarPedestrianHits(world, events);
+  updatePolice(world, dt, events);
+  updateMissions(world, dt, events);
+  updatePickups(world, dt, events);
+
+  // The hospital heals anyone who walks its grounds.
+  const hospital = blockRect(4, 4);
+  if (
+    player.carId === null &&
+    player.x > hospital.x &&
+    player.x < hospital.x + hospital.w &&
+    player.y > hospital.y &&
+    player.y < hospital.y + hospital.h &&
+    player.hp < PLAYER.hp
+  ) {
+    player.hp = Math.min(PLAYER.hp, player.hp + 22 * dt);
+    world.healTimer -= dt;
+    if (world.healTimer <= 0) {
+      world.healTimer = 2;
+      events.push({ type: 'heal', x: player.x, y: player.y });
+    }
+  }
+
+  // Player velocity, for the pursuit lead and the bust check.
+  player.vx = (player.x - prevX) / dt;
+  player.vy = (player.y - prevY) / dt;
+
+  // Particles and skid marks age.
+  for (let i = world.particles.length - 1; i >= 0; i -= 1) {
+    const p = world.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 1 - dt * 3;
+    p.vy *= 1 - dt * 3;
+    if (p.life <= 0) world.particles.splice(i, 1);
+  }
+  for (let i = world.skids.length - 1; i >= 0; i -= 1) {
+    world.skids[i].life -= dt;
+    if (world.skids[i].life <= 0) world.skids.splice(i, 1);
+  }
+
+  // Camera: follow with a look-ahead, clamped to the world.
+  const lookX = player.x + (player.vx || 0) * 0.35;
+  const lookY = player.y + (player.vy || 0) * 0.35;
+  world.camera.x += (lookX - world.camera.x) * Math.min(1, dt * 4);
+  world.camera.y += (lookY - world.camera.y) * Math.min(1, dt * 4);
+
+  // Fold the events into state changes, in the order they happened.
+  for (let i = 0; i < events.length; i += 1) {
+    const e = events[i];
+    if (e.type === 'crime') {
+      addWanted(world, WANTED[e.kind] || 1, events);
+    } else if (e.type === 'crash') {
+      world.shake = Math.min(1, world.shake + (e.hard ? 0.7 : 0.3));
+      burst(world, e.x, e.y, 'rgba(255, 220, 120, A)', e.hard ? 10 : 5, 3, 0.4);
+    } else if (e.type === 'thugPunch') {
+      damagePlayer(world, 8, e.x, e.y, events);
+    } else if (e.type === 'hit' || e.type === 'punch') {
+      burst(world, e.x, e.y, 'rgba(255, 220, 120, A)', 6, 3, 0.3);
+    } else if (e.type === 'knockdown') {
+      world.stats.knockedOut += 1;
+      burst(world, e.x, e.y, 'rgba(255, 255, 255, A)', 8, 3, 0.4);
+    } else if (e.type === 'busted') {
+      world.lastFine = Math.min(player.money, WANTED.bustFine);
+      applyBusted(world);
+      world.pendingEnd = 'busted';
+    } else if (e.type === 'wasted') {
+      world.lastFine = Math.min(player.money, WANTED.wastedFine);
+      applyWasted(world);
+      world.pendingEnd = 'wasted';
+    } else if (e.type === 'cash') {
+      burst(world, e.x, e.y, 'rgba(123, 228, 149, A)', 6, 3, 0.4);
+    }
+  }
+
+  // Loops: engine follows the driven car, siren follows the chase.
+  if (audio) {
+    const driven = world.cars.find((c) => c.id === player.carId);
+    audio.engine(driven ? Math.abs(driven.speed) / 560 : 0, Boolean(driven));
+    audio.siren(world.sirenOn);
+  }
+  return events;
+}
+
+/** The prompt line for the HUD: what E or Space would do right now. */
+export function currentPrompt(world) {
+  const player = world.player;
+  if (player.carId !== null) return 'E — Get out    Space — Handbrake';
+  const car = nearestCar(world, 56);
+  if (car) return car.owned ? 'E — Get in the car' : 'E — Steal the car';
+  const step = activeStep(world.missions);
+  if (step && step.kind === 'defeat') return 'Space / Click — Punch';
+  return null;
 }
