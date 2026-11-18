@@ -39,7 +39,8 @@ function laneOffset(from, to) {
 }
 
 export function spawnTrafficCar(random, nearX, nearY) {
-  const spots = intersections().filter((p) => Math.hypot(p.x - nearX, p.y - nearY) > 350);
+  // Spawn beyond the visible frame so cars never pop into view.
+  const spots = intersections().filter((p) => Math.hypot(p.x - nearX, p.y - nearY) > 700);
   const at = pick(random, spots.length > 0 ? spots : intersections());
   const model = pick(random, TRAFFIC_MODELS);
   const spec = MODELS[model];
@@ -58,7 +59,7 @@ export function spawnTrafficCar(random, nearX, nearY) {
 }
 
 /** Steer a traffic car toward its route target, slowing for whatever is ahead. */
-function driveTraffic(car, dt, random, cars, city, events) {
+function driveTraffic(car, dt, random, cars, city, events, player) {
   const route = car.route;
   if (!route) return;
   const off = laneOffset(route.from, route.to);
@@ -91,6 +92,12 @@ function driveTraffic(car, dt, random, cars, city, events) {
       break;
     }
   }
+  // Yield to a pedestrian on foot ahead: brake while moving, hold once stopped.
+  if (player && player.carId === null && !player.dead) {
+    if (Math.hypot(player.x - aheadX, player.y - aheadY) < 46) {
+      throttle = Math.abs(car.speed) > 30 ? -0.6 : 0;
+    }
+  }
   if (car.wait > 0) {
     car.wait -= dt;
     throttle = 0;
@@ -114,7 +121,7 @@ export function updateTraffic(world, dt, events) {
       const fresh = spawnTrafficCar(random, px, py);
       Object.assign(car, fresh, { id: car.id });
     } else {
-      driveTraffic(car, dt, random, cars, city, events);
+      driveTraffic(car, dt, random, cars, city, events, world.player);
     }
   }
   // Stolen traffic is replaced, so the streets never empty out.

@@ -7,12 +7,12 @@ import { CASH_PICKUP_COUNT, PARKED_COUNT, PEDESTRIAN_COUNT, PLAYER, TRAFFIC_COUN
 import { createRandom, pick, range, rangeInt } from './random.js';
 import { blockRect, createCity } from './city.js';
 import { createPlayer, damagePlayer, enterCar, exitCar, nearestCar, updatePlayer } from './player.js';
-import { MODELS, createCar, stepCar } from './vehicles.js';
+import { MODELS, createCar, resetCarIds, stepCar } from './vehicles.js';
 import { spawnTrafficCar, updateTraffic } from './traffic.js';
 import { createPedestrian, spawnPedestrian, updatePedestrian } from './pedestrians.js';
-import { checkCarPedestrianHits, resolvePunch, updatePickups } from './combat.js';
+import { checkCarPedestrianHits, checkCarPlayerHits, resolvePunch, updatePickups } from './combat.js';
 import { addWanted, applyBusted, applyWasted, updatePolice } from './police.js';
-import { LANDMARKS, activeStep, createMissions, updateMissions } from './missions.js';
+import { LANDMARKS, MISSION_DEFS, activeStep, createMissions, updateMissions } from './missions.js';
 import { ACTION_INTERACT, ACTION_PUNCH } from './input.js';
 
 export function createWorld(seed) {
@@ -53,6 +53,8 @@ export function createWorld(seed) {
 export function resetWorld(world) {
   const random = createRandom(world.seed);
   world.random = random;
+  // Car ids restart too, so the same seed hands out the same ids: saves match cars by id.
+  resetCarIds();
   world.city = createCity(random);
   world.cars = [];
   world.peds = [];
@@ -100,15 +102,22 @@ export function resetWorld(world) {
   sports.missionCar = 'sports';
   world.cars.push(sports);
 
-  // Parked cars along the roads, for the taking.
+  // Parked cars along the roads, for the taking. Re-roll any spot that
+  // would overlap a mission car, so the story cars are never buried.
   const models = ['sedan', 'sedan', 'taxi', 'van', 'sedan', 'truck'];
   for (let i = 0; i < PARKED_COUNT; i += 1) {
-    const vertical = random() < 0.5;
-    const centre = pick(random, WORLD.roadCentres);
-    const along = range(random, 200, WORLD.size - 200);
-    const edge = (random() < 0.5 ? -1 : 1) * (WORLD.road / 2 - 18);
-    const x = vertical ? centre + edge : along;
-    const y = vertical ? along : centre + edge;
+    let x = 0;
+    let y = 0;
+    let vertical = true;
+    for (let tries = 0; tries < 20; tries += 1) {
+      vertical = random() < 0.5;
+      const centre = pick(random, WORLD.roadCentres);
+      const along = range(random, 200, WORLD.size - 200);
+      const edge = (random() < 0.5 ? -1 : 1) * (WORLD.road / 2 - 18);
+      x = vertical ? centre + edge : along;
+      y = vertical ? along : centre + edge;
+      if (!world.cars.some((c) => Math.hypot(c.x - x, c.y - y) < 80)) break;
+    }
     const model = pick(random, models);
     const car = createCar(model, x, y, vertical ? Math.PI / 2 : 0, pick(random, MODELS[model].colors));
     car.parked = true;
@@ -119,11 +128,12 @@ export function resetWorld(world) {
   for (let i = 0; i < TRAFFIC_COUNT; i += 1) world.cars.push(spawnTrafficCar(random, 700, 2160));
   for (let i = 0; i < PEDESTRIAN_COUNT; i += 1) world.peds.push(spawnPedestrian(random, world.city));
 
-  // The warehouse crew: three thugs lounging in the yard.
+  // The warehouse crew: three thugs lounging in the yard, on open ground
+  // south of the warehouse building and north of the yard crates.
   const crew = [
-    { x: 2300, y: 900 },
-    { x: 2400, y: 920 },
-    { x: 2350, y: 850 },
+    { x: 2280, y: 930 },
+    { x: 2380, y: 930 },
+    { x: 2480, y: 930 },
   ];
   for (const spot of crew) {
     const thug = createPedestrian(spot.x, spot.y, Math.PI / 2, { hp: 68, thug: true, shirt: '#3a3f4a', skin: '#c68642' });
@@ -141,29 +151,52 @@ export function resetWorld(world) {
   }
 }
 
-/** Apply a loaded save onto a freshly reset world. */
+/** Apply a loaded save onto a freshly reset world. The data is already
+ *  validated by loadSave; this still clamps defensively and never throws. */
 export function applySave(world, data) {
   const p = world.player;
-  p.x = data.player.x;
-  p.y = data.player.y;
+  p.x = Math.max(0, Math.min(WORLD.size, data.player.x));
+  p.y = Math.max(0, Math.min(WORLD.size, data.player.y));
   p.angle = data.player.angle;
-  p.hp = data.player.hp;
+  // A save at zero health loads the player alive: death is not a save state.
+  p.hp = Math.max(1, Math.min(PLAYER.hp, data.player.hp));
   p.money = data.player.money;
+  p.dead = false;
   world.missions.index = data.missions.index;
   world.missions.step = data.missions.step;
   world.missions.done = [...data.missions.done];
   world.missions.thugsLeft = data.missions.thugsLeft;
   world.missions.earned = data.missions.earned;
   world.playTime = data.playTime || 0;
+  // The evade step is never loaded armed: hiding must be re-earned after a load.
+  world.missions.evadeArmed = false;
+  world.missions.failed = false;
+  // A timed delivery restarts its clock at full time on load.
+  const def = MISSION_DEFS[world.missions.index];
+  if (def && def.timed && world.missions.step === 1) world.missions.timer = def.timed;
+  // Restore which warehouse thugs were down.
+  if (Array.isArray(data.thugs)) {
+    const thugs = world.peds.filter((x) => x.thug);
+    data.thugs.forEach((down, i) => {
+      const thug = thugs[i];
+      if (!thug || !down) return;
+      thug.state = 'down';
+      thug.hp = 0;
+      thug.downTime = 9999;
+    });
+  }
   // Restore the kept cars; the rest of the traffic is re-rolled by the seed.
+  // Mission cars match by their story role, other cars by id.
   for (const saved of data.cars) {
-    const car = world.cars.find((c) => c.missionCar === saved.model && c.keep) || world.cars.find((c) => c.id === saved.id);
+    const car =
+      (saved.missionCar && world.cars.find((c) => c.missionCar === saved.missionCar)) || world.cars.find((c) => c.id === saved.id);
     if (car) {
       car.x = saved.x;
       car.y = saved.y;
       car.angle = saved.angle;
-      car.hp = saved.hp;
-      car.stolen = saved.stolen;
+      car.hp = Math.max(saved.hp, car.missionCar ? 20 : 0);
+      car.stolen = Boolean(saved.stolen);
+      car.keep = true;
       car.parked = true;
       car.speed = 0;
       car.driver = 'none';
@@ -177,6 +210,10 @@ export function applySave(world, data) {
       p.carId = car.id;
     }
   }
+  // Never load the player inside a wall.
+  const res = world.city.collideCircle(p.x, p.y, PLAYER.radius);
+  p.x = res.x;
+  p.y = res.y;
   world.camera = { x: p.x, y: p.y };
 }
 
@@ -263,6 +300,7 @@ export function stepWorld(world, dt, input, actions, audio) {
   updateTraffic(world, dt, events);
   for (const ped of world.peds) updatePedestrian(ped, dt, world, events);
   checkCarPedestrianHits(world, events);
+  checkCarPlayerHits(world, events);
   updatePolice(world, dt, events);
   updateMissions(world, dt, events);
   updatePickups(world, dt, events);
@@ -350,7 +388,14 @@ export function stepWorld(world, dt, input, actions, audio) {
 /** The prompt line for the HUD: what E or Space would do right now. */
 export function currentPrompt(world) {
   const player = world.player;
-  if (player.carId !== null) return 'E — Get out    Space — Handbrake';
+  if (player.carId !== null) {
+    const step = activeStep(world.missions);
+    const car = world.cars.find((c) => c.id === player.carId);
+    if (step && step.kind === 'deliver' && car && Math.abs(car.speed) >= 40 && Math.hypot(player.x - step.x, player.y - step.y) < step.radius * 1.5) {
+      return 'Slow down to deliver';
+    }
+    return 'E — Get out    Space — Handbrake';
+  }
   const car = nearestCar(world, 56);
   if (car) return car.owned ? 'E — Get in the car' : 'E — Steal the car';
   const step = activeStep(world.missions);

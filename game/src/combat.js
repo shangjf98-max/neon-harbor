@@ -5,6 +5,8 @@
 
 import { PLAYER } from './config.js';
 import { scarePedestrian } from './pedestrians.js';
+import { damagePlayer } from './player.js';
+import { carCircles } from './vehicles.js';
 
 /** The player's punch: one swing, every pedestrian in the arc takes damage. */
 export function resolvePunch(world, events) {
@@ -28,6 +30,8 @@ export function resolvePunch(world, events) {
     hitAnyone = true;
     if (!ped.thug) hitCivilian = true;
     ped.hp -= PLAYER.punchDamage;
+    // A thug who takes a punch fights back, mission or not.
+    if (ped.thug) ped.aggro = true;
     // Knockback away from the player.
     const nx = ped.x + (dx / (dist || 1)) * 22;
     const ny = ped.y + (dy / (dist || 1)) * 22;
@@ -40,7 +44,10 @@ export function resolvePunch(world, events) {
       ped.downTime = ped.thug ? 9999 : 6;
       events.push({ type: 'knockdown', x: ped.x, y: ped.y, thug: ped.thug });
       if (ped.thug) {
-        world.missions.thugsLeft = Math.max(0, world.missions.thugsLeft - 1);
+        // Only knockdowns during the warehouse fight count toward it.
+        if (world.missions.index === 2 && !world.missions.done.includes(2)) {
+          world.missions.thugsLeft = Math.max(0, world.missions.thugsLeft - 1);
+        }
         dropCash(world, ped.x, ped.y, 20);
       } else {
         dropCash(world, ped.x, ped.y, 10);
@@ -80,13 +87,55 @@ export function checkCarPedestrianHits(world, events) {
         events.push({ type: 'crime', kind: 'hitPedestrian', x: ped.x, y: ped.y });
       }
       if (car.driver === 'player' && ped.thug) {
-        world.missions.thugsLeft = Math.max(0, world.missions.thugsLeft - 1);
+        // Only knockdowns during the warehouse fight count toward it.
+        if (world.missions.index === 2 && !world.missions.done.includes(2)) {
+          world.missions.thugsLeft = Math.max(0, world.missions.thugsLeft - 1);
+        }
       }
       for (const other of world.peds) {
         if (!other.thug && other.state !== 'down' && Math.hypot(other.x - ped.x, other.y - ped.y) < 260) {
           scarePedestrian(other, car.x, car.y, world.random);
         }
       }
+    }
+  }
+}
+
+/** A car striking the player on foot: slow cars push them aside, fast cars hurt. */
+export function checkCarPlayerHits(world, events) {
+  const player = world.player;
+  if (player.carId !== null || player.dead) return;
+  for (const car of world.cars) {
+    if (car.driver === 'player') continue;
+    for (const c of carCircles(car)) {
+      const dx = player.x - c.x;
+      const dy = player.y - c.y;
+      const d = Math.hypot(dx, dy);
+      const min = c.r + PLAYER.radius;
+      if (d >= min) continue;
+      // Push the player clear of the car's body, out of solids too.
+      const nx = d > 0 ? dx / d : 1;
+      const ny = d > 0 ? dy / d : 0;
+      const res = world.city.collideCircle(c.x + nx * (min + 1), c.y + ny * (min + 1), PLAYER.radius);
+      player.x = res.x;
+      player.y = res.y;
+      const speed = Math.abs(car.speed);
+      if (speed >= 60 && world.time - (car.playerHitAt ?? -99) > 0.8) {
+        car.playerHitAt = world.time;
+        damagePlayer(world, Math.min(25, 8 + speed * 0.035), car.x, car.y, events);
+        car.speed *= 0.6;
+        events.push({ type: 'crash', x: player.x, y: player.y, hard: speed > 220 });
+        // Shove the player along the car's travel direction.
+        const dir = car.speed >= 0 ? 1 : -1;
+        const shove = world.city.collideCircle(
+          player.x + Math.cos(car.angle) * 14 * dir,
+          player.y + Math.sin(car.angle) * 14 * dir,
+          PLAYER.radius,
+        );
+        player.x = shove.x;
+        player.y = shove.y;
+      }
+      break; // one circle per car per step is enough
     }
   }
 }

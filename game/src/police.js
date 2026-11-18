@@ -3,6 +3,7 @@
 // the slow cool-down when the player breaks line of sight and hides.
 
 import { WANTED, WORLD } from './config.js';
+import { onRoad } from './city.js';
 import { pick } from './random.js';
 import { createCar, stepCar } from './vehicles.js';
 
@@ -16,8 +17,8 @@ export function addWanted(world, stars, events) {
   }
 }
 
-/** How many police cars the current wanted level fields. */
-function policeTarget(wanted) {
+/** How many police cars the current wanted level fields. Exported for unit tests. */
+export function policeTarget(wanted) {
   return wanted === 0 ? 0 : Math.min(5, wanted + (wanted >= 3 ? 1 : 0));
 }
 
@@ -39,24 +40,32 @@ function spawnPolice(world) {
   return car;
 }
 
-/** Pursuit steering: follow the road grid toward the player, ram when close. */
-function pursuitTarget(car, player) {
+/** Pursuit steering: follow the road grid toward the player, ram when close. Exported for unit tests. */
+export function pursuitTarget(car, player) {
   const dist = Math.hypot(player.x - car.x, player.y - car.y);
-  if (dist < 200) return { x: player.x, y: player.y };
   const centres = WORLD.roadCentres;
   const near = (v) => centres.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
+  // Ram straight at the player only when they are on a road or close enough
+  // that no building can be in the way; otherwise head for the grid point
+  // nearest them, so the chase stays on the streets.
+  if (dist < 200 && (dist < 110 || onRoad(player.x, player.y))) return { x: player.x, y: player.y };
+  if (dist < 200) return { x: near(player.x), y: near(player.y) };
   const onV = Math.abs(car.x - near(car.x)) < 42;
   const onH = Math.abs(car.y - near(car.y)) < 42;
   if (onV && !onH) return { x: near(car.x), y: near(player.y) };
   if (onH && !onV) return { x: near(player.x), y: near(car.y) };
   if (onV && onH) {
     // At an intersection: take the neighbouring one that closes on the player.
+    // Neighbours are measured from the snapped centre, not the car's offset spot,
+    // so the target stays exactly on the grid.
     const step = WORLD.pitch;
+    const cx = near(car.x);
+    const cy = near(car.y);
     const options = [
-      { x: car.x + step, y: car.y },
-      { x: car.x - step, y: car.y },
-      { x: car.x, y: car.y + step },
-      { x: car.x, y: car.y - step },
+      { x: cx + step, y: cy },
+      { x: cx - step, y: cy },
+      { x: cx, y: cy + step },
+      { x: cx, y: cy - step },
     ].filter((p) => p.x >= 0 && p.x <= WORLD.size && p.y >= 0 && p.y <= WORLD.size);
     let best = options[0];
     let bestD = Infinity;
@@ -110,7 +119,7 @@ function pursue(car, dt, world, events) {
 
 export function updatePolice(world, dt, events) {
   const player = world.player;
-  const police = world.cars.filter((c) => c.driver === 'police');
+  let police = world.cars.filter((c) => c.driver === 'police');
 
   // Spawn up to the wanted level's target, one per second at most.
   world.spawnTimer = (world.spawnTimer || 0) - dt;
@@ -126,7 +135,21 @@ export function updatePolice(world, dt, events) {
         world.cars.splice(i, 1);
       }
     }
+  } else {
+    // Stars shed: surplus cars peel off once they are far from the player.
+    const target = policeTarget(world.wanted);
+    for (let i = world.cars.length - 1; i >= 0; i -= 1) {
+      const car = world.cars[i];
+      if (
+        car.driver === 'police' &&
+        world.cars.filter((c) => c.driver === 'police').length > target &&
+        Math.hypot(car.x - player.x, car.y - player.y) > 900
+      ) {
+        world.cars.splice(i, 1);
+      }
+    }
   }
+  police = world.cars.filter((c) => c.driver === 'police');
 
   let nearest = Infinity;
   let nearestCar = null;
@@ -176,6 +199,16 @@ export function updatePolice(world, dt, events) {
   }
 }
 
+/** A bust or a death in the middle of the getaway's evade step sends the
+ *  player back to steal the Comet again: the heat is gone, so the evade
+ *  must be re-earned instead of completing for free. */
+function resetEvadeStep(world) {
+  if (world.missions.index === 3 && world.missions.step === 1) {
+    world.missions.step = 0;
+    world.missions.evadeArmed = false;
+  }
+}
+
 /** Apply the bust: fine, clean record, and a walk of shame from the station. */
 export function applyBusted(world) {
   const player = world.player;
@@ -184,6 +217,7 @@ export function applyBusted(world) {
   player.dead = false;
   world.wanted = 0;
   world.bustTimer = 0;
+  resetEvadeStep(world);
   // The station is block (2,2): respawn on the street in front of it.
   player.x = 1328;
   player.y = 1570;
@@ -209,6 +243,7 @@ export function applyWasted(world) {
   player.hp = 100;
   player.dead = false;
   world.wanted = 0;
+  resetEvadeStep(world);
   player.x = 2352;
   player.y = 2580;
   player.angle = -Math.PI / 2;

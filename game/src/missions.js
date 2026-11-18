@@ -57,7 +57,7 @@ export const MISSION_DEFS = [
     reward: 600,
     steps: [
       { kind: 'enterCar', car: 'sports', text: 'Steal the yellow sports car at the plaza' },
-      { kind: 'evade', text: 'Lose the cops — break line of sight until the heat dies down' },
+      { kind: 'evade', text: 'Lose the cops — get clear and stay hidden until the heat dies down' },
       { kind: 'deliver', x: GARAGE_DRIVE.x, y: GARAGE_DRIVE.y, radius: 90, text: 'Deliver the Comet to Mara\'s garage' },
     ],
   },
@@ -107,6 +107,20 @@ function showBanner(missions, title, sub) {
   missions.bannerTime = 5;
 }
 
+/** The warehouse crew, back on their feet: a fresh crew for the fight, and a
+ *  crew that recovers once it is over, so early brawls never soft-lock it. */
+function reviveCrew(world) {
+  for (const ped of world.peds) {
+    if (ped.thug) {
+      ped.state = 'walk';
+      ped.hp = 68;
+      ped.downTime = 0;
+      ped.aggro = false;
+    }
+  }
+  world.missions.thugsLeft = 3;
+}
+
 function completeMission(world, events) {
   const def = MISSION_DEFS[world.missions.index];
   world.player.money += def.reward;
@@ -117,13 +131,15 @@ function completeMission(world, events) {
   world.missions.timer = 0;
   world.missions.failed = false;
   world.missions.thugsLeft = 3;
-  showBanner(world.missions, `MISSION COMPLETE: ${def.title}`, `+$${def.reward} — Mara is pleased.`);
   events.push({ type: 'missionDone', x: world.player.x, y: world.player.y });
   const next = activeMission(world.missions);
+  if (def.title === 'Rough Crowd') reviveCrew(world);
   if (next) {
+    if (next.title === 'Rough Crowd') reviveCrew(world);
+    showBanner(world.missions, `MISSION COMPLETE: ${def.title}`, `+$${def.reward} — Mara is pleased.`);
     events.push({ type: 'briefing', title: next.title, brief: next.brief });
   } else {
-    showBanner(world.missions, 'STORY COMPLETE', 'Neon Harbor is yours, Rook. Keep the engine warm.');
+    showBanner(world.missions, 'STORY COMPLETE', `+$${def.reward} — Neon Harbor is yours, Rook. Keep the engine warm.`);
   }
 }
 

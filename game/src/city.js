@@ -263,11 +263,15 @@ export function createCity(random) {
   function sidewalkLoop(col, row) {
     const rect = blockRect(col, row);
     const m = 14;
+    // Harbor blocks hold water along the south edge: the loop's south side
+    // stays north of the basin, or walkers tread water forever.
+    const block = blocks.find((b) => b.col === col && b.row === row);
+    const bottom = block && block.kind === 'harbor' ? rect.y + rect.h - 170 : rect.y + rect.h - m;
     return [
       { x: rect.x + m, y: rect.y + m },
       { x: rect.x + rect.w - m, y: rect.y + m },
-      { x: rect.x + rect.w - m, y: rect.y + rect.h - m },
-      { x: rect.x + m, y: rect.y + rect.h - m },
+      { x: rect.x + rect.w - m, y: bottom },
+      { x: rect.x + m, y: bottom },
     ];
   }
 

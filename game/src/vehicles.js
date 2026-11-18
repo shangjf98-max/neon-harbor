@@ -17,6 +17,11 @@ export const MODELS = {
 
 let nextId = 1;
 
+/** Restart the id sequence so a rebuilt world hands out the same ids (saves rely on it). */
+export function resetCarIds() {
+  nextId = 1;
+}
+
 export function createCar(model, x, y, angle, color) {
   const spec = MODELS[model];
   return {
@@ -53,6 +58,12 @@ export function carCircles(car) {
     { x: car.x + cos * off, y: car.y + sin * off, r: spec.width * 0.62 },
     { x: car.x - cos * off, y: car.y - sin * off, r: spec.width * 0.62 },
   ];
+}
+
+/** Damage a car. Mission cars keep a drivable floor so a wrecked story car can't soft-lock a mission. */
+function damageCar(car, amount) {
+  const floor = car.missionCar ? 20 : 0;
+  car.hp = Math.max(floor, car.hp - amount);
 }
 
 /**
@@ -101,7 +112,7 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
   if (hit) {
     const impact = Math.abs(car.speed);
     if (impact > 90) {
-      car.hp = Math.max(0, car.hp - impact * 0.03);
+      damageCar(car, impact * 0.03);
       events.push({ type: 'crash', x: car.x, y: car.y, hard: impact > 220 });
     }
     car.speed *= 0.35;
@@ -109,8 +120,10 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
   }
 
   // Car-to-car: separate overlapping circles and trade a little speed.
+  // A centre-distance broadphase skips distant cars before any circle work.
   for (const other of others) {
     if (other === car) continue;
+    if (Math.hypot(other.x - car.x, other.y - car.y) > 90) continue;
     for (const a of carCircles(car)) {
       for (const b of carCircles(other)) {
         const dx = a.x - b.x;
@@ -121,19 +134,36 @@ export function stepCar(car, dt, throttle, steer, city, others, events) {
           const push = (min - d) / 2;
           const ux = dx / d;
           const uy = dy / d;
+          const closing = Math.abs(car.speed - other.speed);
+          if (closing > 60) {
+            damageCar(car, closing * 0.02);
+            damageCar(other, closing * 0.02);
+            events.push({ type: 'crash', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, hard: closing > 200 });
+          }
+          if (other.parked && !car.parked) {
+            // Shove the parked car aside: it slides the full overlap and keeps
+            // no speed, while the moving car plows on instead of stalling.
+            other.x -= ux * (min - d);
+            other.y -= uy * (min - d);
+            other.speed = 0;
+            continue;
+          }
+          if (car.parked && !other.parked) {
+            car.x += ux * (min - d);
+            car.y += uy * (min - d);
+            car.speed = 0;
+            continue;
+          }
           car.x += ux * push;
           car.y += uy * push;
           other.x -= ux * push;
           other.y -= uy * push;
-          const closing = Math.abs(car.speed - other.speed);
-          if (closing > 60) {
-            car.hp = Math.max(0, car.hp - closing * 0.02);
-            other.hp = Math.max(0, other.hp - closing * 0.02);
-            events.push({ type: 'crash', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, hard: closing > 200 });
-          }
           const avg = (car.speed + other.speed) / 2;
           car.speed = avg;
           other.speed = avg;
+          // A parked car that gets shoved stays put instead of rolling away forever.
+          if (other.parked) other.speed = 0;
+          if (car.parked) car.speed = 0;
         }
       }
     }

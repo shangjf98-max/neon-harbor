@@ -30,6 +30,7 @@ export function createPedestrian(x, y, angle, opts = {}) {
     downTime: 0,
     punchCd: 0,
     thug: opts.thug ?? false,
+    aggro: false, // thugs fight back once hit, even outside their mission
     walkPhase: Math.random() * Math.PI * 2,
     scared: false,
   };
@@ -146,8 +147,9 @@ function updateThug(ped, dt, world, events) {
   const dx = player.x - ped.x;
   const dy = player.y - ped.y;
   const dist = Math.hypot(dx, dy);
-  const active = missions.index === 2 && !missions.done.includes(2);
-  if (!active || dist > 420) {
+  const active = ped.aggro || (missions.index === 2 && !missions.done.includes(2));
+  // Thugs fight on foot only: chasing a car is a losing race they never start.
+  if (!active || dist > 420 || player.carId !== null) {
     // Lounging by the warehouse: idle sway, facing the street.
     ped.speed = 0;
     ped.angle += Math.sin(world.time * 0.7 + ped.id) * 0.002;

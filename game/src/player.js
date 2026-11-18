@@ -47,10 +47,13 @@ export function enterCar(world, car, events) {
   if (wasTraffic) car.route = null;
   events.push({ type: 'door', x: car.x, y: car.y });
   // Stealing a car that is not yours draws the heat, once per car.
+  // Except the getaway's Comet: the mission itself sets three stars, and a
+  // second crime on top would make it four.
   if (!car.owned && !car.stolen) {
     car.stolen = true;
     car.keep = true;
-    events.push({ type: 'crime', kind: 'steal', x: car.x, y: car.y });
+    const getawaySetup = car.missionCar === 'sports' && world.missions.index === 3 && world.missions.step === 0;
+    if (!getawaySetup) events.push({ type: 'crime', kind: 'steal', x: car.x, y: car.y });
   }
 }
 
