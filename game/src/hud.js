@@ -3,7 +3,7 @@
 // drawn on the canvas in screen space, after the world.
 
 import { FONT, PALETTE, PLAYER, RANKS } from './config.js';
-import { activeMission, activeStep, missionList } from './missions.js';
+import { activeMission, activeStep, missionList, missionMarker } from './missions.js';
 
 function panel(ctx, x, y, w, h) {
   ctx.fillStyle = PALETTE.panel;
@@ -65,28 +65,39 @@ export function drawHUD(ctx, world, view, prompt, messages, showMissions, briefi
     ctx.textAlign = 'left';
   }
 
-  // Objective, under the top bar: mission title, current step, and the clock.
+  // Objective, under the top bar: mission title, current step, distance and the clock.
+  // On narrow windows it drops below the side panels instead of colliding with them.
   const def = activeMission(world.missions);
   const step = activeStep(world.missions);
   if (def && step) {
     const text = step.text;
+    const marker = missionMarker(world);
+    const distText = marker ? `${Math.max(0, Math.round(Math.hypot(marker.x - player.x, marker.y - player.y) / 10))}m` : '';
     ctx.font = `bold 15px ${FONT}`;
     const tw = ctx.measureText(text).width;
-    const bw = Math.min(width - 40, tw + 120);
+    const bw = Math.min(width - 40, tw + 120 + (distText ? 64 : 0));
     const bx = (width - bw) / 2;
-    panel(ctx, bx, 14, bw, 46);
+    const oy = width < 900 ? 68 : 14;
+    panel(ctx, bx, oy, bw, 46);
     ctx.fillStyle = PALETTE.gold;
     ctx.font = `bold 12px ${FONT}`;
     ctx.textAlign = 'left';
-    ctx.fillText(def.title.toUpperCase(), bx + 14, 32);
+    ctx.fillText(def.title.toUpperCase(), bx + 14, oy + 18);
     ctx.fillStyle = PALETTE.text;
     ctx.font = `14px ${FONT}`;
-    ctx.fillText(text, bx + 14, 50);
+    ctx.fillText(text, bx + 14, oy + 36);
+    if (distText) {
+      ctx.fillStyle = PALETTE.gold;
+      ctx.font = `bold 14px ${FONT}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(distText, bx + bw - 14, oy + 36);
+      ctx.textAlign = 'left';
+    }
     if (world.missions.timer > 0) {
       ctx.fillStyle = world.missions.timer < 20 ? PALETTE.danger : PALETTE.text;
       ctx.font = `bold 16px ${FONT}`;
       ctx.textAlign = 'right';
-      ctx.fillText(`${Math.ceil(world.missions.timer)}s`, bx + bw - 14, 33);
+      ctx.fillText(`${Math.ceil(world.missions.timer)}s`, bx + bw - 14, oy + 19);
       ctx.textAlign = 'left';
     }
   }
@@ -134,12 +145,21 @@ export function drawHUD(ctx, world, view, prompt, messages, showMissions, briefi
     my -= 20;
   }
 
-  // Mission banner, centre screen.
+  // Mission banner, centre screen, on a dim backdrop so it reads over the city.
   if (world.missions.banner && world.missions.bannerTime > 0) {
     const alpha = Math.min(1, world.missions.bannerTime / 0.8);
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.textAlign = 'center';
+    ctx.font = `bold 34px ${FONT}`;
+    const tw1 = ctx.measureText(world.missions.banner.title).width;
+    ctx.font = `16px ${FONT}`;
+    const tw2 = ctx.measureText(world.missions.banner.sub).width;
+    const bbw = Math.max(tw1, tw2) + 56;
+    ctx.fillStyle = 'rgba(10, 8, 14, 0.55)';
+    ctx.beginPath();
+    ctx.roundRect(width / 2 - bbw / 2, 76, bbw, 88, 10);
+    ctx.fill();
     ctx.fillStyle = PALETTE.gold;
     ctx.font = `bold 34px ${FONT}`;
     ctx.shadowColor = 'rgba(0,0,0,0.6)';
@@ -158,7 +178,7 @@ export function drawHUD(ctx, world, view, prompt, messages, showMissions, briefi
     ctx.fillStyle = PALETTE.danger;
     ctx.font = `bold 18px ${FONT}`;
     ctx.textAlign = 'center';
-    ctx.fillText('BUSTED?', width / 2, height - 160);
+    ctx.fillText('POLICE CLOSING IN — MOVE!', width / 2, height - 160);
     ctx.fillStyle = '#3a3a42';
     ctx.fillRect(width / 2 - 90, height - 150, 180, 8);
     ctx.fillStyle = PALETTE.danger;

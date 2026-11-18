@@ -37,26 +37,41 @@ export function createRenderer(canvas) {
   function drawGround(cam) {
     ctx.fillStyle = PALETTE.ground;
     ctx.fillRect(0, 0, viewW, viewH);
-    // Roads: asphalt bands along every centre line.
+    // Roads: asphalt bands along every centre line, only the visible ones.
     ctx.fillStyle = PALETTE.road;
     for (const c of WORLD.roadCentres) {
-      ctx.fillRect(c - WORLD.road / 2 - cam.x, -cam.y, WORLD.road, WORLD.size);
-      ctx.fillRect(-cam.x, c - WORLD.road / 2 - cam.y, WORLD.size, WORLD.road);
+      const vx = c - WORLD.road / 2 - cam.x;
+      if (vx < viewW && vx + WORLD.road > 0) ctx.fillRect(vx, -cam.y, WORLD.road, WORLD.size);
+      const hy = c - WORLD.road / 2 - cam.y;
+      if (hy < viewH && hy + WORLD.road > 0) ctx.fillRect(-cam.x, hy, WORLD.size, WORLD.road);
     }
-    // Lane dashes.
+    // Lane dashes, clipped to the visible stretch of each road (phase kept from d = 0).
     ctx.fillStyle = PALETTE.lane;
     const dash = 34;
     const gap = 30;
+    const step = dash + gap;
     for (const c of WORLD.roadCentres) {
-      for (let d = 0; d < WORLD.size; d += dash + gap) {
-        ctx.fillRect(c - 3 - cam.x, d - cam.y, 6, dash);
-        ctx.fillRect(d - cam.x, c - 3 - cam.y, dash, 6);
+      const vx = c - 3 - cam.x;
+      if (vx > -8 && vx < viewW) {
+        const d0 = Math.max(0, Math.floor(cam.y / step) * step);
+        for (let d = d0; d < cam.y + viewH + step && d < WORLD.size; d += step) {
+          ctx.fillRect(vx, d - cam.y, 6, dash);
+        }
+      }
+      const hy = c - 3 - cam.y;
+      if (hy > -8 && hy < viewH) {
+        const d0 = Math.max(0, Math.floor(cam.x / step) * step);
+        for (let d = d0; d < cam.x + viewW + step && d < WORLD.size; d += step) {
+          ctx.fillRect(d - cam.x, hy, dash, 6);
+        }
       }
     }
-    // Crosswalks at every intersection.
+    // Crosswalks at every visible intersection.
     ctx.fillStyle = PALETTE.crosswalk;
     for (const cx of WORLD.roadCentres) {
+      if (cx - cam.x < -WORLD.road || cx - cam.x > viewW + WORLD.road) continue;
       for (const cy of WORLD.roadCentres) {
+        if (cy - cam.y < -WORLD.road || cy - cam.y > viewH + WORLD.road) continue;
         for (let i = -2; i <= 2; i += 1) {
           ctx.fillRect(cx + i * 14 - 5 - cam.x, cy - WORLD.road / 2 + 8 - cam.y, 9, 14);
           ctx.fillRect(cx + i * 14 - 5 - cam.x, cy + WORLD.road / 2 - 22 - cam.y, 9, 14);
@@ -211,15 +226,18 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     for (const c of world.city.crates) {
+      const x = c.x - cam.x;
+      const y = c.y - cam.y;
+      if (x + c.w < 0 || y + c.h < 0 || x > viewW || y > viewH) continue;
       ctx.fillStyle = PALETTE.shadow;
-      ctx.fillRect(c.x + 3 - cam.x, c.y + 4 - cam.y, c.w, c.h);
+      ctx.fillRect(x + 3, y + 4, c.w, c.h);
       ctx.fillStyle = c.hue;
-      ctx.fillRect(c.x - cam.x, c.y - cam.y, c.w, c.h);
+      ctx.fillRect(x, y, c.w, c.h);
       ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-      ctx.strokeRect(c.x - cam.x, c.y - cam.y, c.w, c.h);
+      ctx.strokeRect(x, y, c.w, c.h);
       ctx.beginPath();
-      ctx.moveTo(c.x - cam.x, c.y - cam.y);
-      ctx.lineTo(c.x + c.w - cam.x, c.y + c.h - cam.y);
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + c.w, y + c.h);
       ctx.stroke();
     }
     for (const lamp of world.city.lamps) {
@@ -268,6 +286,62 @@ export function createRenderer(canvas) {
     ctx.fill();
   }
 
+  // Off-screen objective: an arrow pinned to the screen edge, pointing the
+  // way, with the distance. Nothing to show while the objective is in view.
+  function drawEdgeArrow(world, cam) {
+    const marker = missionMarker(world);
+    if (!marker) return;
+    const x = marker.x - cam.x;
+    const y = marker.y - cam.y;
+    const margin = 46;
+    if (x > margin && x < viewW - margin && y > margin && y < viewH - margin) return;
+    const cx = viewW / 2;
+    const cy = viewH / 2;
+    const angle = Math.atan2(y - cy, x - cx);
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    const tx = dx !== 0 ? (dx > 0 ? (viewW - margin - cx) / dx : (margin - cx) / dx) : Infinity;
+    const ty = dy !== 0 ? (dy > 0 ? (viewH - margin - cy) / dy : (margin - cy) / dy) : Infinity;
+    const t = Math.min(tx, ty);
+    const ex = cx + dx * t;
+    const ey = cy + dy * t;
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(angle);
+    ctx.fillStyle = PALETTE.marker;
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-8, -11);
+    ctx.lineTo(-8, 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    const dist = Math.hypot(marker.x - world.player.x, marker.y - world.player.y);
+    ctx.fillStyle = '#f5f1e6';
+    ctx.font = `bold 12px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${Math.round(dist / 10)}m`, ex, ey + 26);
+    ctx.textAlign = 'left';
+  }
+
+  // Mara by her garage: a standing figure with a name tag, so "talk to Mara" has a face.
+  function drawMara(mara, time) {
+    drawPedestrian(
+      ctx,
+      { x: mara.x, y: mara.y, angle: Math.PI / 2, speed: 0, state: 'idle', shirt: '#7be8f5', skin: '#e0ac69', thug: false, walkPhase: time },
+      time,
+    );
+    ctx.fillStyle = 'rgba(20, 18, 24, 0.8)';
+    ctx.font = `bold 12px ${FONT}`;
+    ctx.textAlign = 'center';
+    const label = 'MARA';
+    const tw = ctx.measureText(label).width;
+    ctx.fillRect(mara.x - tw / 2 - 6, mara.y - 34, tw + 12, 18);
+    ctx.fillStyle = '#7be8f5';
+    ctx.fillText(label, mara.x, mara.y - 21);
+    ctx.textAlign = 'left';
+  }
+
   function drawEffects(world, cam) {
     for (const p of world.particles) {
       const alpha = Math.max(0, p.life / p.maxLife);
@@ -292,16 +366,24 @@ export function createRenderer(canvas) {
     for (const block of world.city.blocks) drawBlock(block, cam);
     drawProps(world, cam, time);
     drawMarker(world, cam, time);
-    // Entities sorted by y so nearer things overlap farther ones.
+    drawEdgeArrow(world, cam);
+    // Entities sorted by y so nearer things overlap farther ones. Kind and
+    // reference, not per-frame closures, keep the sort allocation-light.
     const drawables = [];
-    for (const car of world.cars) drawables.push({ y: car.y, draw: () => drawCar(ctx, car, time) });
-    for (const ped of world.peds) drawables.push({ y: ped.y, draw: () => drawPedestrian(ctx, ped, time) });
-    drawables.push({ y: world.player.y, draw: () => drawPlayer(ctx, world.player, time) });
+    for (const car of world.cars) drawables.push({ y: car.y, kind: 0, ref: car });
+    for (const ped of world.peds) drawables.push({ y: ped.y, kind: 1, ref: ped });
+    drawables.push({ y: world.player.y, kind: 2, ref: world.player });
+    if (world.mara) drawables.push({ y: world.mara.y, kind: 3, ref: world.mara });
     drawables.sort((a, b) => a.y - b.y);
     ctx.save();
     ctx.translate(-cam.x, -cam.y);
     drawPickups(ctx, world, time);
-    for (const d of drawables) d.draw();
+    for (const d of drawables) {
+      if (d.kind === 0) drawCar(ctx, d.ref, time);
+      else if (d.kind === 1) drawPedestrian(ctx, d.ref, time);
+      else if (d.kind === 2) drawPlayer(ctx, d.ref, time);
+      else drawMara(d.ref, time);
+    }
     ctx.restore();
     drawEffects(world, cam);
     // Warm sunlight and a soft vignette.
@@ -317,7 +399,7 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, 0, viewW, viewH);
   }
 
-  function drawTitle(world, time, hasSave) {
+  function drawTitle(world, time, hasSave, mouse) {
     // The city drifts behind the title: a slow pan over downtown.
     const cam = {
       x: 1536 - viewW / 2 + Math.sin(time * 0.05) * 320,
@@ -345,12 +427,15 @@ export function createRenderer(canvas) {
     const items = hasSave ? ['CONTINUE', 'NEW GAME'] : ['NEW GAME'];
     items.forEach((label, i) => {
       const by = viewH / 2 + 8 + i * 54;
-      ctx.fillStyle = i === 0 ? 'rgba(255, 209, 102, 0.92)' : 'rgba(20, 18, 24, 0.8)';
-      ctx.strokeStyle = PALETTE.panelEdge;
+      const hover = mouse && mouse.x >= bx && mouse.x <= bx + bw && mouse.y >= by && mouse.y <= by + 42;
+      ctx.fillStyle = i === 0 ? (hover ? '#ffd166' : 'rgba(255, 209, 102, 0.92)') : hover ? 'rgba(60, 54, 72, 0.92)' : 'rgba(20, 18, 24, 0.8)';
+      ctx.strokeStyle = hover ? PALETTE.gold : PALETTE.panelEdge;
+      ctx.lineWidth = hover ? 2 : 1;
       ctx.beginPath();
       ctx.roundRect(bx, by, bw, 42, 8);
       ctx.fill();
       ctx.stroke();
+      ctx.lineWidth = 1;
       ctx.fillStyle = i === 0 ? '#20180a' : PALETTE.text;
       ctx.font = `bold 17px ${FONT}`;
       ctx.fillText(label, viewW / 2, by + 27);
@@ -376,8 +461,10 @@ export function createRenderer(canvas) {
     ctx.fillStyle = PALETTE.muted;
     ctx.fillText(`${RANKS[Math.min(RANKS.length - 1, world.missions.done.length)]}  ·  $${world.player.money}  ·  ${world.missions.done.length} of 4 missions done`, viewW / 2, viewH / 2 - 26);
     ctx.fillStyle = PALETTE.text;
-    ctx.fillText('P / Esc — resume      Tab — missions      M — mute', viewW / 2, viewH / 2 + 8);
-    ctx.fillText('Progress saves automatically.', viewW / 2, viewH / 2 + 34);
+    ctx.fillText('P / Esc — resume      Click — resume', viewW / 2, viewH / 2 + 8);
+    ctx.fillText('WASD / arrows — walk & drive      E — enter car      Space — punch      Shift — sprint', viewW / 2, viewH / 2 + 34);
+    ctx.fillText('Tab — missions      M — mute', viewW / 2, viewH / 2 + 58);
+    ctx.fillText('Progress saves automatically.', viewW / 2, viewH / 2 + 84);
     ctx.textAlign = 'left';
   }
 
@@ -406,7 +493,7 @@ export function createRenderer(canvas) {
   function draw(world, screen, ui) {
     const time = world.time;
     if (screen === SCREEN_TITLE) {
-      return drawTitle(world, time, ui.hasSave);
+      return drawTitle(world, time, ui.hasSave, ui.mouse);
     }
     // The camera is a centre point; the view is the window around it, clamped
     // to the world, with the screen shake folded in.

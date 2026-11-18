@@ -8,7 +8,7 @@
 
 import { STEP } from './config.js';
 import { createWorld, currentPrompt, resetWorld, applySave, stepWorld } from './world.js';
-import { createInput, ACTION_CONFIRM, ACTION_MISSIONS, ACTION_MUTE, ACTION_PAUSE } from './input.js';
+import { createInput, ACTION_CONFIRM, ACTION_MISSIONS, ACTION_MUTE, ACTION_PAUSE, ACTION_PUNCH } from './input.js';
 import { createAudio } from './audio.js';
 import { hasSave, loadSave, saveGame } from './save.js';
 import { createRenderer, SCREEN_BUSTED, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WASTED } from './render.js';
@@ -61,6 +61,9 @@ function runGame() {
   let messages = [];
   let saveNotice = 0;
   let frameCount = 0;
+  // The title reads the save once: parsing it every frame is wasted work, and
+  // the title never comes back after play starts, so the cache cannot go stale.
+  const cachedHasSave = hasSave();
   // Debug handle for play-testing: the screen, the briefing card and the held keys.
   window.__neon.debug = {
     screen: () => screen,
@@ -180,7 +183,7 @@ function runGame() {
     if (screen === SCREEN_TITLE) {
       if (actions & ACTION_CONFIRM) {
         audio.click();
-        startGame(hasSave());
+        startGame(cachedHasSave);
       } else {
         handleTitleClick(click);
       }
@@ -190,12 +193,18 @@ function runGame() {
         stepWorld(world, STEP, { moveVector: () => ({ x: 0, y: 0 }), driveVector: () => ({ throttle: 0, steer: 0, handbrake: false }), sprinting: () => false }, 0, null);
         accumulator -= STEP;
       }
-      titleButtons = renderer.draw(world, screen, { hasSave: hasSave(), prompt: null, messages: [], showMissions: false, briefing: null }) || [];
+      titleButtons = renderer.draw(world, screen, { hasSave: cachedHasSave, mouse: input.mouse(), prompt: null, messages: [], showMissions: false, briefing: null }) || [];
       return;
     }
 
+    // Mute works on every screen, including briefings and end screens.
+    if (actions & ACTION_MUTE) {
+      const muted = audio.toggleMute();
+      pushMessage(muted ? 'Sound off' : 'Sound on');
+    }
+
     if (screen === SCREEN_BUSTED || screen === SCREEN_WASTED) {
-      if ((actions & ACTION_CONFIRM) || click) {
+      if ((actions & (ACTION_CONFIRM | ACTION_PUNCH)) || click) {
         audio.click();
         screen = SCREEN_PLAY;
         announce('Playing.');
@@ -205,18 +214,17 @@ function runGame() {
     }
 
     if (briefing) {
-      if ((actions & ACTION_CONFIRM) || click) {
+      if ((actions & (ACTION_CONFIRM | ACTION_PUNCH)) || click) {
         audio.click();
         briefing = null;
+        if (world.missions.index === 0 && world.missions.step === 0) {
+          pushMessage('Follow the gold marker to the sedan by the garage.');
+        }
       }
       renderer.draw(world, SCREEN_PLAY, { hasSave: false, prompt: null, messages, showMissions: false, briefing });
       return;
     }
 
-    if (actions & ACTION_MUTE) {
-      const muted = audio.toggleMute();
-      pushMessage(muted ? 'Sound off' : 'Sound on');
-    }
     if (actions & ACTION_MISSIONS && screen === SCREEN_PLAY) {
       showMissions = !showMissions;
       audio.click();
@@ -234,7 +242,7 @@ function runGame() {
     }
 
     if (screen === SCREEN_PAUSED) {
-      if (actions & ACTION_CONFIRM) {
+      if ((actions & ACTION_CONFIRM) || click) {
         screen = SCREEN_PLAY;
         announce('Playing.');
       }

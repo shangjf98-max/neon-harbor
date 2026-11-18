@@ -52,6 +52,7 @@ export function createInput(canvas) {
   window.addEventListener('keyup', onKeyUp);
   canvas.addEventListener('mousedown', onMouseDown);
   canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   window.addEventListener('blur', () => held.clear());
 
   /** Held movement as {x, y} in [-1, 1], normalised. */
